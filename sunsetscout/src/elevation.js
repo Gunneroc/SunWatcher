@@ -1,10 +1,13 @@
 /**
- * Open-Meteo Elevation API with batching and caching.
+ * Elevation API with fallback providers, batching, and caching.
+ * Primary: Open-Meteo Elevation API
+ * Fallback: Open-Elevation API
  */
 import { chunk, asyncPool, fetchWithRetry } from './utils.js';
 
-const ELEVATION_URL = 'https://api.open-meteo.com/v1/elevation';
-const BATCH_SIZE = 250;
+const OPEN_METEO_URL = 'https://api.open-meteo.com/v1/elevation';
+const OPEN_ELEVATION_URL = 'https://api.open-elevation.com/api/v1/lookup';
+const BATCH_SIZE = 100;
 const CONCURRENCY = 2;
 
 // In-memory elevation cache (keyed by rounded coordinates)
@@ -15,9 +18,67 @@ function cacheKey(lat, lng) {
 }
 
 /**
+ * Fetch a batch of elevations from Open-Meteo (GET with comma-separated coords).
+ */
+async function fetchBatchOpenMeteo(batch) {
+  const lats = batch.map(p => p.lat.toFixed(5)).join(',');
+  const lngs = batch.map(p => p.lng.toFixed(5)).join(',');
+
+  const response = await fetchWithRetry(
+    `${OPEN_METEO_URL}?latitude=${lats}&longitude=${lngs}`,
+    {},
+    2
+  );
+  const data = await response.json();
+  return data.elevation || [];
+}
+
+/**
+ * Fetch a batch of elevations from Open-Elevation (POST with JSON body).
+ */
+async function fetchBatchOpenElevation(batch) {
+  const locations = batch.map(p => ({
+    latitude: parseFloat(p.lat.toFixed(5)),
+    longitude: parseFloat(p.lng.toFixed(5))
+  }));
+
+  const response = await fetchWithRetry(
+    OPEN_ELEVATION_URL,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ locations })
+    },
+    2
+  );
+  const data = await response.json();
+  if (!data.results) throw new Error('No results from Open-Elevation');
+  return data.results.map(r => r.elevation);
+}
+
+/**
+ * Fetch a batch of elevations, trying Open-Meteo first then Open-Elevation.
+ */
+async function fetchBatchWithFallback(batch) {
+  try {
+    return await fetchBatchOpenMeteo(batch);
+  } catch (err) {
+    console.warn('Open-Meteo elevation failed, trying fallback:', err.message);
+  }
+
+  try {
+    return await fetchBatchOpenElevation(batch);
+  } catch (err) {
+    console.warn('Open-Elevation fallback also failed:', err.message);
+  }
+
+  return batch.map(() => null);
+}
+
+/**
  * Fetch elevations for an array of {lat, lng} points.
  * Returns the same array with `elevation` property added.
- * Uses batching (100 per request) and concurrency limiting.
+ * Uses batching and concurrency limiting with automatic fallback.
  * @param {Array<{lat: number, lng: number}>} points
  * @param {function} onProgress - optional callback(completed, total)
  */
@@ -46,26 +107,10 @@ export async function fetchElevations(points, onProgress) {
   let completed = points.length - uncachedIndices.length;
 
   const batchResults = await asyncPool(CONCURRENCY, batches, async (batch) => {
-    const lats = batch.map(p => p.lat.toFixed(5)).join(',');
-    const lngs = batch.map(p => p.lng.toFixed(5)).join(',');
-
-    try {
-      const response = await fetchWithRetry(
-        `${ELEVATION_URL}?latitude=${lats}&longitude=${lngs}`
-      );
-      const data = await response.json();
-      const elevations = data.elevation || [];
-
-      completed += batch.length;
-      if (onProgress) onProgress(completed, points.length);
-
-      return elevations;
-    } catch (err) {
-      console.warn('Elevation batch failed, skipping:', err.message);
-      completed += batch.length;
-      if (onProgress) onProgress(completed, points.length);
-      return batch.map(() => null);
-    }
+    const elevations = await fetchBatchWithFallback(batch);
+    completed += batch.length;
+    if (onProgress) onProgress(completed, points.length);
+    return elevations;
   });
 
   // Merge results back

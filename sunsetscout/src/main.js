@@ -89,6 +89,7 @@ async function runAnalysis(lat, lng) {
   } catch (err) {
     stopPulse();
     setLoading(false);
+    console.error('Elevation fetch error:', err);
     showError('Elevation data unavailable. Please try again.');
     return;
   }

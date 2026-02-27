@@ -1,0 +1,21 @@
+{
+  "name": "sunsetscout",
+  "version": "1.0.0",
+  "description": "Find the best sunset-watching locations near any place",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4",
+    "suncalc": "^1.9.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0",
+    "vitest": "^2.0.0"
+  }
+}

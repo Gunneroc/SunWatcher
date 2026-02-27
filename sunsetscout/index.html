@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SunsetScout — Find the Best Sunset Spots</title>
+  <meta name="description" content="Find the best sunset-watching locations near any place. Analyzes terrain, elevation, and weather to find unobstructed viewpoints.">
+  <link rel="icon" href="/SunWatcher/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin="anonymous">
+  <link rel="stylesheet" href="./styles/main.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <div class="logo-icon">&#9728;</div>
+          <h1>SunsetScout</h1>
+        </div>
+        <div class="search-box">
+          <input type="text" id="search-input" placeholder="Search location..." autocomplete="off">
+          <button class="search-btn" id="search-btn">Find Spots</button>
+        </div>
+        <div class="location-results" id="location-results"></div>
+      </div>
+
+      <div class="controls">
+        <div class="control-group">
+          <label for="date-input">Date</label>
+          <input type="date" id="date-input">
+        </div>
+        <div class="control-group">
+          <label for="radius-slider">Radius</label>
+          <input type="range" id="radius-slider" min="1" max="25" value="10">
+          <span class="radius-value" id="radius-value">10 km</span>
+        </div>
+        <button class="mode-toggle" id="mode-toggle">&#127749; Sunset</button>
+        <div class="weather-toggle-wrap">
+          <label for="weather-toggle">Weather</label>
+          <input type="checkbox" class="toggle-switch" id="weather-toggle" checked>
+        </div>
+      </div>
+
+      <div class="sidebar-content">
+        <div class="card" id="sun-card"></div>
+        <div class="card" id="weather-card"></div>
+        <div class="results-list" id="results-list">
+          <p class="no-results">Enter a location to find the best sunset spots nearby.</p>
+        </div>
+      </div>
+
+      <div class="attribution">
+        Elevation data from <a href="https://open-meteo.com/">Open-Meteo.com</a> &middot;
+        Geocoding by <a href="https://nominatim.openstreetmap.org/">OpenStreetMap Nominatim</a> &middot;
+        Sunset times from <a href="https://sunrise-sunset.org/">sunrise-sunset.org</a><br>
+        Map tiles &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot;
+        Sun calculations by <a href="https://github.com/mourner/suncalc">suncalc</a> (Vladimir Agafonkin)
+      </div>
+    </aside>
+
+    <!-- Map -->
+    <div class="map-container">
+      <div id="map"></div>
+    </div>
+  </div>
+
+  <!-- Loading overlay -->
+  <div class="loading-overlay" id="loading-overlay">
+    <div class="loading-sun">
+      <div class="sun-body"></div>
+      <div class="horizon-line"></div>
+    </div>
+    <div class="loading-message" id="loading-message">Analyzing viewpoints...</div>
+    <div class="progress-track">
+      <div class="progress-bar" id="progress-bar"></div>
+    </div>
+  </div>
+
+  <!-- Error toast -->
+  <div class="error-message" id="error-message"></div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

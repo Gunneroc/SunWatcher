@@ -69,11 +69,14 @@ export function computeObstruction(candidate, raySamples) {
  * @returns {Array} candidates with viewshed results added
  */
 export async function analyzeViewshed(candidates, sunBearing, sunAltitude, onProgress) {
+  // Filter out candidates with null elevation
+  const validCandidates = candidates.filter(c => c.elevation != null);
+
   // Generate all ray sample points
   const allRayPoints = [];
   const rayPointCounts = [];
 
-  for (const c of candidates) {
+  for (const c of validCandidates) {
     const rayPts = generateRayPoints(c.lat, c.lng, sunBearing);
     allRayPoints.push(...rayPts);
     rayPointCounts.push(rayPts.length);
@@ -88,25 +91,27 @@ export async function analyzeViewshed(candidates, sunBearing, sunAltitude, onPro
   let offset = 0;
   const results = [];
 
-  for (let i = 0; i < candidates.length; i++) {
+  for (let i = 0; i < validCandidates.length; i++) {
     const count = rayPointCounts[i];
-    const raySamples = elevatedPoints.slice(offset, offset + count).map((pt, j) => ({
-      ...pt,
-      distance: (j + 1) * RAY_SAMPLE_SPACING
-    }));
+    const raySamples = elevatedPoints.slice(offset, offset + count)
+      .filter(pt => pt.elevation != null)
+      .map((pt, j) => ({
+        ...pt,
+        distance: (j + 1) * RAY_SAMPLE_SPACING
+      }));
     offset += count;
 
-    const obstruction = computeObstruction(candidates[i], raySamples);
+    const obstruction = computeObstruction(validCandidates[i], raySamples);
 
     results.push({
-      ...candidates[i],
+      ...validCandidates[i],
       ...obstruction,
       sunAltitude,
       sunBearing,
       viewQuality: obstruction.isClear ? 'clear' : 'obstructed'
     });
 
-    if (onProgress) onProgress(i + 1, candidates.length, 'analysis');
+    if (onProgress) onProgress(i + 1, validCandidates.length, 'analysis');
   }
 
   return results;

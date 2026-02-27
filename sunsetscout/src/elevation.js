@@ -4,8 +4,8 @@
 import { chunk, asyncPool, fetchWithRetry } from './utils.js';
 
 const ELEVATION_URL = 'https://api.open-meteo.com/v1/elevation';
-const BATCH_SIZE = 100;
-const CONCURRENCY = 4;
+const BATCH_SIZE = 250;
+const CONCURRENCY = 2;
 
 // In-memory elevation cache (keyed by rounded coordinates)
 const elevationCache = new Map();
@@ -49,16 +49,23 @@ export async function fetchElevations(points, onProgress) {
     const lats = batch.map(p => p.lat.toFixed(5)).join(',');
     const lngs = batch.map(p => p.lng.toFixed(5)).join(',');
 
-    const response = await fetchWithRetry(
-      `${ELEVATION_URL}?latitude=${lats}&longitude=${lngs}`
-    );
-    const data = await response.json();
-    const elevations = data.elevation || [];
+    try {
+      const response = await fetchWithRetry(
+        `${ELEVATION_URL}?latitude=${lats}&longitude=${lngs}`
+      );
+      const data = await response.json();
+      const elevations = data.elevation || [];
 
-    completed += batch.length;
-    if (onProgress) onProgress(completed, points.length);
+      completed += batch.length;
+      if (onProgress) onProgress(completed, points.length);
 
-    return elevations;
+      return elevations;
+    } catch (err) {
+      console.warn('Elevation batch failed, skipping:', err.message);
+      completed += batch.length;
+      if (onProgress) onProgress(completed, points.length);
+      return batch.map(() => null);
+    }
   });
 
   // Merge results back
@@ -67,15 +74,25 @@ export async function fetchElevations(points, onProgress) {
   for (const originalIdx of uncachedIndices) {
     const elev = batchResults[batchIdx][withinBatch];
     const pt = points[originalIdx];
-    const key = cacheKey(pt.lat, pt.lng);
-    elevationCache.set(key, elev);
-    results[originalIdx] = { ...pt, elevation: elev };
+    if (elev != null) {
+      const key = cacheKey(pt.lat, pt.lng);
+      elevationCache.set(key, elev);
+      results[originalIdx] = { ...pt, elevation: elev };
+    } else {
+      results[originalIdx] = { ...pt, elevation: null };
+    }
 
     withinBatch++;
     if (withinBatch >= BATCH_SIZE) {
       batchIdx++;
       withinBatch = 0;
     }
+  }
+
+  // If all elevations failed, throw so the caller can show an error
+  const validCount = results.filter(r => r && r.elevation != null).length;
+  if (validCount === 0) {
+    throw new Error('All elevation requests failed');
   }
 
   return results;

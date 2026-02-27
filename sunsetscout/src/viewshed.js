@@ -1,8 +1,9 @@
 /**
  * Viewshed analysis — ray-casting along sunset bearing.
- * Determines which candidate viewpoints have clear sunset views.
+ * Elevation fetching runs on the main thread (needs DOM for terrain tiles).
+ * Obstruction computation is delegated to a Web Worker for UI responsiveness.
  */
-import { destinationPoint, curvatureDrop, haversine } from './utils.js';
+import { destinationPoint, curvatureDrop } from './utils.js';
 import { fetchElevations } from './elevation.js';
 
 const RAY_SAMPLE_SPACING = 300;  // meters between samples along ray
@@ -60,19 +61,82 @@ export function computeObstruction(candidate, raySamples) {
 }
 
 /**
+ * Try to run obstruction computation in a Web Worker.
+ * Falls back to main-thread computation if the worker fails.
+ */
+function computeInWorker(validCandidates, rayElevations, sunBearing, sunAltitude, onProgress) {
+  return new Promise((resolve) => {
+    let worker;
+    try {
+      worker = new Worker(
+        new URL('./viewshed-worker.js', import.meta.url),
+        { type: 'module' }
+      );
+    } catch {
+      resolve(computeOnMainThread(validCandidates, rayElevations, sunBearing, sunAltitude, onProgress));
+      return;
+    }
+
+    worker.onmessage = (event) => {
+      const msg = event.data;
+      if (msg.type === 'progress') {
+        if (onProgress) onProgress(msg.completed, msg.total, 'analysis');
+      } else if (msg.type === 'result') {
+        worker.terminate();
+        resolve(msg.data);
+      }
+    };
+
+    worker.onerror = () => {
+      console.warn('Viewshed worker failed, falling back to main thread');
+      worker.terminate();
+      resolve(computeOnMainThread(validCandidates, rayElevations, sunBearing, sunAltitude, onProgress));
+    };
+
+    worker.postMessage({
+      candidates: validCandidates.map(c => ({ lat: c.lat, lng: c.lng, elevation: c.elevation })),
+      rayElevations,
+      sunBearing,
+      sunAltitude
+    });
+  });
+}
+
+/**
+ * Main-thread fallback for obstruction computation.
+ */
+function computeOnMainThread(validCandidates, rayElevations, sunBearing, sunAltitude, onProgress) {
+  const results = [];
+  for (let i = 0; i < validCandidates.length; i++) {
+    const obstruction = computeObstruction(validCandidates[i], rayElevations[i]);
+    results.push({
+      ...validCandidates[i],
+      ...obstruction,
+      sunAltitude,
+      sunBearing,
+      viewQuality: obstruction.isClear ? 'clear' : 'obstructed'
+    });
+    if (onProgress && (i % 100 === 0 || i === validCandidates.length - 1)) {
+      onProgress(i + 1, validCandidates.length, 'analysis');
+    }
+  }
+  return results;
+}
+
+/**
  * Run full viewshed analysis for a set of candidate points.
- * Fetches ray elevation data and computes obstruction for each candidate.
+ * Elevation fetching on main thread, computation delegated to Web Worker.
  * @param {Array} candidates - [{lat, lng, elevation}] with elevations already fetched
  * @param {number} sunBearing - sunset azimuth in degrees
  * @param {number} sunAltitude - sun altitude at sunset in degrees
- * @param {function} onProgress - optional callback(completed, total)
+ * @param {function} onProgress - optional callback(completed, total, phase)
  * @returns {Array} candidates with viewshed results added
  */
 export async function analyzeViewshed(candidates, sunBearing, sunAltitude, onProgress) {
   // Filter out candidates with null elevation
   const validCandidates = candidates.filter(c => c.elevation != null);
 
-  // Generate all ray sample points
+  // Generate all ray sample points (main thread — just math)
   const allRayPoints = [];
   const rayPointCounts = [];
 
@@ -82,37 +146,30 @@ export async function analyzeViewshed(candidates, sunBearing, sunAltitude, onPro
     rayPointCounts.push(rayPts.length);
   }
 
-  // Fetch all ray elevations in bulk
+  // Fetch all ray elevations in bulk (main thread — needs DOM for terrain tiles)
   const elevatedPoints = await fetchElevations(allRayPoints, (done, total) => {
     if (onProgress) onProgress(done, total, 'elevation');
   });
 
-  // Split back into per-candidate rays and compute obstruction
+  // Split into per-candidate ray arrays for the worker
   let offset = 0;
-  const results = [];
-
+  const rayElevations = [];
   for (let i = 0; i < validCandidates.length; i++) {
     const count = rayPointCounts[i];
     const raySamples = elevatedPoints.slice(offset, offset + count)
       .filter(pt => pt.elevation != null)
       .map((pt, j) => ({
-        ...pt,
+        lat: pt.lat,
+        lng: pt.lng,
+        elevation: pt.elevation,
         distance: (j + 1) * RAY_SAMPLE_SPACING
       }));
     offset += count;
-
-    const obstruction = computeObstruction(validCandidates[i], raySamples);
-
-    results.push({
-      ...validCandidates[i],
-      ...obstruction,
-      sunAltitude,
-      sunBearing,
-      viewQuality: obstruction.isClear ? 'clear' : 'obstructed'
-    });
-
-    if (onProgress) onProgress(i + 1, validCandidates.length, 'analysis');
+    rayElevations.push(raySamples);
   }
 
-  return results;
+  // Delegate obstruction computation to worker (or fallback)
+  if (onProgress) onProgress(0, validCandidates.length, 'analysis');
+
+  return computeInWorker(validCandidates, rayElevations, sunBearing, sunAltitude, onProgress);
 }

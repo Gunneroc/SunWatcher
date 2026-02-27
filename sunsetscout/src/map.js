@@ -2,6 +2,7 @@
  * Leaflet map setup, layers, popups, and markers.
  */
 import L from 'leaflet';
+import 'leaflet.heat';
 import { getScoreColor, getMarkerRadius, getVerdict } from './scorer.js';
 import { azimuthToCompass, formatDistance, destinationPoint } from './utils.js';
 
@@ -11,6 +12,8 @@ let topSpotsLayer = null;
 let azimuthLineLayer = null;
 let searchCircleLayer = null;
 let pulseLayer = null;
+let heatmapLayer = null;
+let heatmapVisible = false;
 
 const TILE_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>';
@@ -51,6 +54,11 @@ export function clearLayers() {
   if (azimuthLineLayer) azimuthLineLayer.clearLayers();
   if (searchCircleLayer) searchCircleLayer.clearLayers();
   if (pulseLayer) pulseLayer.clearLayers();
+  if (heatmapLayer) {
+    map.removeLayer(heatmapLayer);
+    heatmapLayer = null;
+  }
+  heatmapVisible = false;
 }
 
 /**
@@ -239,6 +247,54 @@ export function panTo(lat, lng, zoom) {
   } else {
     map.panTo([lat, lng]);
   }
+}
+
+/**
+ * Plot a heatmap layer from scored candidates.
+ */
+export function plotHeatmap(candidates) {
+  if (heatmapLayer) {
+    map.removeLayer(heatmapLayer);
+    heatmapLayer = null;
+  }
+
+  const maxScore = Math.max(...candidates.map(c => c.score), 1);
+  const heatData = candidates.map(c => [c.lat, c.lng, c.score / maxScore]);
+
+  heatmapLayer = L.heatLayer(heatData, {
+    radius: 25,
+    blur: 20,
+    maxZoom: 17,
+    gradient: {
+      0.2: '#3b82f6',
+      0.5: '#eab308',
+      0.8: '#f97316',
+      1.0: '#22c55e'
+    }
+  });
+
+  // Start hidden (markers visible by default)
+  if (heatmapVisible) {
+    heatmapLayer.addTo(map);
+  }
+}
+
+/**
+ * Toggle between heatmap and marker views.
+ * Returns true if heatmap is now visible.
+ */
+export function toggleHeatmap() {
+  heatmapVisible = !heatmapVisible;
+
+  if (heatmapVisible) {
+    if (heatmapLayer) heatmapLayer.addTo(map);
+    if (candidateLayer) map.removeLayer(candidateLayer);
+  } else {
+    if (heatmapLayer) map.removeLayer(heatmapLayer);
+    if (candidateLayer) candidateLayer.addTo(map);
+  }
+
+  return heatmapVisible;
 }
 
 /**

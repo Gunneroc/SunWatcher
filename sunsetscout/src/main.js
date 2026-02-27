@@ -2,7 +2,7 @@
  * SunsetScout — Main entry point.
  * Wires together all modules: geocoding, solar, elevation, viewshed, weather, map, UI.
  */
-import { initMap, clearLayers, zoomToLocation, drawAzimuthLine, plotCandidates, highlightTopSpots, showPulseAnimation, panTo } from './map.js';
+import { initMap, clearLayers, zoomToLocation, drawAzimuthLine, plotCandidates, highlightTopSpots, showPulseAnimation, panTo, plotHeatmap, toggleHeatmap } from './map.js';
 import { initUI, showLocationPicker, hideLocationPicker, updateSunCard, updateWeatherCard, updateResultsList, setLoading, setProgress, showError, state, updateHash } from './ui.js';
 import { geocode } from './geocoder.js';
 import { getSunData } from './solar.js';
@@ -19,6 +19,16 @@ initMap('map');
 initUI({
   onSearch: handleSearch
 });
+
+// Heatmap toggle
+const heatmapBtn = document.getElementById('heatmap-toggle');
+if (heatmapBtn) {
+  heatmapBtn.addEventListener('click', () => {
+    const isActive = toggleHeatmap();
+    heatmapBtn.classList.toggle('active', isActive);
+    heatmapBtn.innerHTML = isActive ? '&#9679; Markers' : '&#9632; Heatmap';
+  });
+}
 
 /**
  * Main search handler — orchestrates the full pipeline.
@@ -132,6 +142,16 @@ async function runAnalysis(lat, lng) {
     panTo(c.lat, c.lng);
   });
   highlightTopSpots(ranked, 5);
+  plotHeatmap(ranked);
+
+  // Show heatmap toggle and reset state
+  const heatBtn = document.getElementById('heatmap-toggle');
+  if (heatBtn) {
+    heatBtn.style.display = 'flex';
+    heatBtn.classList.remove('active');
+    heatBtn.innerHTML = '&#9632; Heatmap';
+  }
+
   updateResultsList(ranked, (c) => {
     panTo(c.lat, c.lng, 14);
   });
@@ -139,7 +159,7 @@ async function runAnalysis(lat, lng) {
   // Step 8: Weather (optional)
   if (state.weatherEnabled) {
     try {
-      const weather = await fetchWeather(lat, lng);
+      const weather = await fetchWeather(lat, lng, sunData.targetTime);
       updateWeatherCard(weather, date);
     } catch (err) {
       console.warn('Weather data unavailable:', err);

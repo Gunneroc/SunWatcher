@@ -173,8 +173,16 @@ export function updateWeatherCard(weatherData, targetDate) {
   }
 
   const q = dayData.quality;
+  const timeLabel = dayData.isHourly ? 'At sunset' : 'Daily avg';
+  const visStr = dayData.visibility != null
+    ? `${(dayData.visibility / 1000).toFixed(0)} km`
+    : '—';
+  const windStr = dayData.windSpeed != null
+    ? `${Math.round(dayData.windSpeed)} km/h`
+    : '—';
+
   card.innerHTML = `
-    <h3>Weather</h3>
+    <h3>Weather <span class="weather-time-label">${timeLabel}</span></h3>
     <div class="weather-badge ${q.class}">
       <span class="weather-icon">${q.icon}</span>
       <span class="weather-label">${q.label}</span>
@@ -188,6 +196,14 @@ export function updateWeatherCard(weatherData, targetDate) {
       <div class="weather-stat">
         <span>Rain Chance</span>
         <span>${dayData.precipProbability}%</span>
+      </div>
+      <div class="weather-stat">
+        <span>Visibility</span>
+        <span>${visStr}</span>
+      </div>
+      <div class="weather-stat">
+        <span>Wind</span>
+        <span>${windStr}</span>
       </div>
     </div>
   `;

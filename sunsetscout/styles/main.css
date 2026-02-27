@@ -407,9 +407,17 @@ html, body {
   margin-bottom: 10px;
 }
 
+.weather-time-label {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--accent-orange);
+  margin-left: 6px;
+}
+
 .weather-details {
-  display: flex;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
 }
 
 .weather-stat {
@@ -530,6 +538,37 @@ html, body {
 #map {
   width: 100%;
   height: 100%;
+}
+
+/* ===== Heatmap Toggle ===== */
+.heatmap-toggle {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  z-index: 1000;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: var(--shadow);
+}
+
+.heatmap-toggle:hover {
+  border-color: var(--accent-orange);
+  background: var(--bg-secondary);
+}
+
+.heatmap-toggle.active {
+  border-color: var(--accent-orange);
+  background: rgba(255, 107, 53, 0.15);
+  color: var(--accent-orange);
 }
 
 /* ===== Map Markers ===== */

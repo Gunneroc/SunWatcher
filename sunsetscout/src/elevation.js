@@ -1,92 +1,106 @@
 /**
- * Elevation API with fallback providers, batching, and caching.
- * Primary: Open-Meteo Elevation API
- * Fallback: Open-Elevation API
+ * Elevation lookup using AWS Terrain Tiles (Terrarium format).
+ * Loads PNG tiles where elevation is encoded in RGB values.
+ * ~15 tiles cover a 10km radius — orders of magnitude faster than per-point APIs.
+ *
+ * Tile source: Amazon/Mapzen open terrain data (public domain, no API key).
+ * Terrarium encoding: elevation = (R * 256 + G + B / 256) - 32768
  */
-import { chunk, asyncPool, fetchWithRetry } from './utils.js';
+// No external dependencies — all tile math is self-contained
 
-const OPEN_METEO_URL = 'https://api.open-meteo.com/v1/elevation';
-const OPEN_ELEVATION_URL = 'https://api.open-elevation.com/api/v1/lookup';
-const BATCH_SIZE = 100;
-const CONCURRENCY = 2;
+const TILE_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+const TILE_ZOOM = 12;
 
-// In-memory elevation cache (keyed by rounded coordinates)
+// Cache: tile key -> ImageData
+const tileImageCache = new Map();
+// Cache: coordinate key -> elevation
 const elevationCache = new Map();
 
 function cacheKey(lat, lng) {
   return `${lat.toFixed(5)},${lng.toFixed(5)}`;
 }
 
-/**
- * Fetch a batch of elevations from Open-Meteo (GET with comma-separated coords).
- */
-async function fetchBatchOpenMeteo(batch) {
-  const lats = batch.map(p => p.lat.toFixed(5)).join(',');
-  const lngs = batch.map(p => p.lng.toFixed(5)).join(',');
-
-  const response = await fetchWithRetry(
-    `${OPEN_METEO_URL}?latitude=${lats}&longitude=${lngs}`,
-    {},
-    2
+/** Convert lat/lng to tile x/y at a given zoom level. */
+function getTileCoords(lat, lng, zoom) {
+  const n = 1 << zoom;
+  const x = Math.floor(((lng + 180) / 360) * n);
+  const latRad = lat * Math.PI / 180;
+  const y = Math.floor(
+    (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n
   );
-  const data = await response.json();
-  return data.elevation || [];
+  return { tileX: x, tileY: y };
 }
 
-/**
- * Fetch a batch of elevations from Open-Elevation (POST with JSON body).
- */
-async function fetchBatchOpenElevation(batch) {
-  const locations = batch.map(p => ({
-    latitude: parseFloat(p.lat.toFixed(5)),
-    longitude: parseFloat(p.lng.toFixed(5))
-  }));
-
-  const response = await fetchWithRetry(
-    OPEN_ELEVATION_URL,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ locations })
-    },
-    2
+/** Convert lat/lng to pixel position within a specific tile. */
+function getPixelInTile(lat, lng, zoom, tileX, tileY) {
+  const n = 1 << zoom;
+  const px = Math.floor(((lng + 180) / 360 * n - tileX) * 256);
+  const latRad = lat * Math.PI / 180;
+  const py = Math.floor(
+    ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n - tileY) * 256
   );
-  const data = await response.json();
-  if (!data.results) throw new Error('No results from Open-Elevation');
-  return data.results.map(r => r.elevation);
+  return {
+    px: Math.max(0, Math.min(255, px)),
+    py: Math.max(0, Math.min(255, py))
+  };
 }
 
-/**
- * Fetch a batch of elevations, trying Open-Meteo first then Open-Elevation.
- */
-async function fetchBatchWithFallback(batch) {
-  try {
-    return await fetchBatchOpenMeteo(batch);
-  } catch (err) {
-    console.warn('Open-Meteo elevation failed, trying fallback:', err.message);
-  }
+/** Decode Terrarium RGB to elevation in meters. */
+function decodeTerrarium(r, g, b) {
+  return (r * 256 + g + b / 256) - 32768;
+}
 
-  try {
-    return await fetchBatchOpenElevation(batch);
-  } catch (err) {
-    console.warn('Open-Elevation fallback also failed:', err.message);
-  }
+/** Load a terrain tile and return its ImageData. */
+function loadTileImage(tileX, tileY, zoom) {
+  const key = `${zoom}/${tileX}/${tileY}`;
+  if (tileImageCache.has(key)) return tileImageCache.get(key);
 
-  return batch.map(() => null);
+  const url = TILE_URL
+    .replace('{z}', zoom)
+    .replace('{x}', tileX)
+    .replace('{y}', tileY);
+
+  const promise = new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      resolve(ctx.getImageData(0, 0, 256, 256));
+    };
+    img.onerror = () => reject(new Error(`Failed to load tile ${key}`));
+    img.src = url;
+  });
+
+  tileImageCache.set(key, promise);
+  return promise;
+}
+
+/** Read elevation from an ImageData at a pixel coordinate. */
+function readElevation(imageData, px, py) {
+  const idx = (py * 256 + px) * 4;
+  return decodeTerrarium(
+    imageData.data[idx],
+    imageData.data[idx + 1],
+    imageData.data[idx + 2]
+  );
 }
 
 /**
  * Fetch elevations for an array of {lat, lng} points.
+ * Loads terrain tiles from AWS, decodes elevation client-side.
  * Returns the same array with `elevation` property added.
- * Uses batching and concurrency limiting with automatic fallback.
  * @param {Array<{lat: number, lng: number}>} points
  * @param {function} onProgress - optional callback(completed, total)
  */
 export async function fetchElevations(points, onProgress) {
-  // Check cache first, separate cached vs uncached
   const results = new Array(points.length);
   const uncachedIndices = [];
 
+  // Check point-level cache
   for (let i = 0; i < points.length; i++) {
     const key = cacheKey(points[i].lat, points[i].lng);
     if (elevationCache.has(key)) {
@@ -101,43 +115,65 @@ export async function fetchElevations(points, onProgress) {
     return results;
   }
 
-  // Batch uncached points
-  const uncachedPoints = uncachedIndices.map(i => points[i]);
-  const batches = chunk(uncachedPoints, BATCH_SIZE);
-  let completed = points.length - uncachedIndices.length;
+  // Determine which tiles we need and map points to tiles
+  const tilesNeeded = new Map();
+  const pointMappings = [];
 
-  const batchResults = await asyncPool(CONCURRENCY, batches, async (batch) => {
-    const elevations = await fetchBatchWithFallback(batch);
-    completed += batch.length;
-    if (onProgress) onProgress(completed, points.length);
-    return elevations;
+  for (const idx of uncachedIndices) {
+    const pt = points[idx];
+    const { tileX, tileY } = getTileCoords(pt.lat, pt.lng, TILE_ZOOM);
+    const tileKey = `${TILE_ZOOM}/${tileX}/${tileY}`;
+    if (!tilesNeeded.has(tileKey)) {
+      tilesNeeded.set(tileKey, { tileX, tileY });
+    }
+    const { px, py } = getPixelInTile(pt.lat, pt.lng, TILE_ZOOM, tileX, tileY);
+    pointMappings.push({ idx, tileKey, px, py });
+  }
+
+  if (onProgress) onProgress(0, points.length);
+
+  // Load all needed tiles in parallel
+  const tileEntries = [...tilesNeeded.entries()];
+  const tileDataMap = new Map();
+
+  const loadPromises = tileEntries.map(async ([key, { tileX, tileY }]) => {
+    try {
+      const imageData = await loadTileImage(tileX, tileY, TILE_ZOOM);
+      tileDataMap.set(key, imageData);
+    } catch (err) {
+      console.warn(`Tile load failed for ${key}:`, err.message);
+    }
   });
 
-  // Merge results back
-  let batchIdx = 0;
-  let withinBatch = 0;
-  for (const originalIdx of uncachedIndices) {
-    const elev = batchResults[batchIdx][withinBatch];
-    const pt = points[originalIdx];
-    if (elev != null) {
+  await Promise.all(loadPromises);
+
+  // Look up elevation for each point from loaded tile data
+  let completed = points.length - uncachedIndices.length;
+  for (const { idx, tileKey, px, py } of pointMappings) {
+    const pt = points[idx];
+    const imageData = tileDataMap.get(tileKey);
+
+    if (imageData) {
+      const elevation = readElevation(imageData, px, py);
       const key = cacheKey(pt.lat, pt.lng);
-      elevationCache.set(key, elev);
-      results[originalIdx] = { ...pt, elevation: elev };
+      elevationCache.set(key, elevation);
+      results[idx] = { ...pt, elevation };
     } else {
-      results[originalIdx] = { ...pt, elevation: null };
+      results[idx] = { ...pt, elevation: null };
     }
 
-    withinBatch++;
-    if (withinBatch >= BATCH_SIZE) {
-      batchIdx++;
-      withinBatch = 0;
+    completed++;
+    // Report progress in chunks to avoid overwhelming the UI
+    if (completed % 500 === 0 || completed === points.length) {
+      if (onProgress) onProgress(completed, points.length);
     }
   }
 
-  // If all elevations failed, throw so the caller can show an error
-  const validCount = results.filter(r => r && r.elevation != null).length;
-  if (validCount === 0) {
-    throw new Error('All elevation requests failed');
+  if (onProgress) onProgress(points.length, points.length);
+
+  // If no tiles loaded at all, throw
+  if (tileDataMap.size === 0) {
+    throw new Error('Failed to load any elevation tiles');
   }
 
   return results;
@@ -151,7 +187,6 @@ export async function fetchRayElevations(rayPoints) {
   const allPoints = rayPoints.flat();
   const elevated = await fetchElevations(allPoints);
 
-  // Re-structure back into rays
   let idx = 0;
   return rayPoints.map(ray => {
     const result = elevated.slice(idx, idx + ray.length);
@@ -165,4 +200,5 @@ export async function fetchRayElevations(rayPoints) {
  */
 export function clearElevationCache() {
   elevationCache.clear();
+  tileImageCache.clear();
 }
